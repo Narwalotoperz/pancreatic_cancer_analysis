@@ -1,0 +1,446 @@
+---
+title: "pancreatic cancer"
+author: "Wiktoria Gąsior"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+
+```{r}
+install.packages("tidyverse")
+install.packages("ggplot2")
+install.packages("corrplot")
+install.packages('ggcorrplot')
+install.packages("corrplot")
+install.packages("FSA")
+install.packages("car")
+install.packages("rstatix")
+install.packages("lmtest")
+
+```
+
+```{r}
+library(corrplot)
+library(FSA)
+library(rstatix)
+library(tidyverse)
+library(lmtest)
+library(dplyr)
+library(car)
+library(ggplot2)
+library(ggpubr)
+library(dunn.test)
+library(ggcorrplot)
+library(caret)
+```
+
+
+
+
+
+#Analiza wariancji 
+
+Dane w formie bazowej można pobrać ze strony:
+https://www.kaggle.com/datasets/johnjdavisiv/urinary-biomarkers-for-pancreatic-cancer
+
+Krótko opiszemy dane, z których korzystałyśmy i to w jaki sposób przygotowałyśmy je do analizy.
+
+panceras_cancer
+Postanowiłyśmy użyć tych danych aby przeprowadzić analizę wariancji. Dane dotyczą wyników badań moczu 590 osób, z czego u 199 zdiagnozowano raka trzustki. Dane w wersji bazowej zawierają 14 kolumn, z czego 8 to zmienne jakościowe i 7 ilościowe.
+
+Zmienne jakościowe:
+
+sample_id, patient_cohort, sample_origin, age, sex, diagnosis, stage, benign_sample_diagnosis,
+
+Zmienne ilościowe:
+
+plasma_CA19_9, creatinine, LYVE1, REG1B, TFF1, REG1A.
+
+Uzajemy wiek za zmienną jakościową, jako że dorobiłyśmy do niego klasę wieku. Klasy wieku zawierają następujące przedziały wieku:
+
+1.  26 - 50 
+2.  51 - 60
+3.  61 - 70
+4.  71 - 89
+
+I są zapisane w pliku jako zmienna age_group.
+
+Jak łatwo zauważyć brakuje wielu wartości zmiennych plasma_CA19_9 i REG1A. Przez wzgląd na braki postanowiłyśmy tych zmiennych nie używać w naszym projekcie.
+
+### Cel analizy 
+
+W sprawozdaniu będziemy przeprowadzać analizę wariancji na danych dotyczących raka trzustki. Naszym celem jest sprawdzić czy dane klasyfikujące, takie jak płeć, wynik diagnozy czy klasa wieku mają wpływ na poziom kreatyniny. Spodziewamy się odpowiedzi twierdzącej przynajmniej dla diagnozy, ale chcemy też zbadać, w jaki sposób dane różnią się między grupami. 
+
+
+
+```{r}
+library(readxl)
+p_cancer <- read_excel("pankeras_cancer.xlsx", 
+    col_types = c("text", "text", "text", 
+        "numeric", "text", "text", "text", "text", 
+        "numeric", "numeric", "numeric", 
+        "numeric", "numeric", "numeric"))
+head(p_cancer)
+```
+
+```{r}
+head(p_cancer)
+```
+
+
+Po zaimportowaniu danych przerabiam kolumnę diagnosis na typ klasyfikatora oraz odrzucam pierwsze kolumny jako nieprzydatne z punktu widzenia analizy.
+
+```{r}
+p_cancer <- dplyr::mutate(p_cancer,diagnosis = as.factor(diagnosis))
+p_cancer <- p_cancer[-591,]
+
+head(p_cancer)
+summary(p_cancer)
+
+```
+
+```{r}
+p_cancer_1 <- dplyr::select(p_cancer, c(4:14))
+head(p_cancer_1)
+```
+Następnie dodaję zmienną age_group
+
+```{r}
+p_cancer_1 <- dplyr::mutate(p_cancer_1, age = as.numeric(age))
+p_cancer_1$age_group <- cut(p_cancer_1$age, breaks = c(0,51,61,71,Inf), labels = c(1,2,3,4), right = FALSE)
+#age_groups to: 1 to 26-50, 2 to 51-60, 3 to 61-70, 4 to 70-89
+summary(p_cancer_1)
+```
+
+Możemy zauważyć, że zarówno grupy podzielone na płeć, wiek jak i na diagnozę są zbliżone ilościowo. 
+Dobrze to rokuje na korzyść przyszłej analizy.
+
+Możemy zerknąć na rozkład interesującej nas zmiennej ilościowej, czyli creatine. Opisuje ona poziom kreatyniny w próbkach. Poziom ten u osób u których wystąpił rak trzustki jest zaburzony ze względu na przeciwciała produkowane przez układ odpornościowy.
+
+
+```{r}
+hist(p_cancer_1$creatinine, main = "Poziom kreatyniny" )
+```
+Bez wątpienia zmienna nie ma rozkładu normalnego, co uniemożliwia przeprowadzenie analizy wariancji.
+
+Sprawdzamy jeszcze, czy rozkłady są normalne w poszczególnych grupach względem zmiennej `diagnosis`
+
+```{r}
+diagnosis_1 = subset(p_cancer_1, `diagnosis` == 1)
+head(diagnosis_1)
+
+
+diagnosis_2 = subset(p_cancer_1, `diagnosis` == 2)
+head(diagnosis_2)
+
+
+diagnosis_3 = subset(p_cancer_1, `diagnosis` == 3)
+head(diagnosis_3)
+
+```
+```{r}
+hist(diagnosis_1$creatinine, main = 'Poziom kreatyny dla osób zdrowych')
+hist(diagnosis_2$creatinine, main = 'Poziom kreatyny dla osób przewlekle chorych')
+hist(diagnosis_3$creatinine, main = 'Poziom kreatyny dla osób chorych na raka')
+```
+
+Niestety histogramy nie pozostawiają złudzeń, próbka nie ma rozkładu normalnego.
+
+Próbujemy zmienić zmienną ilościową na inny parametr badania.
+
+```{r}
+hist(p_cancer_1$LYVE1, main = 'wyniki LYVE1')
+
+hist(p_cancer_1$REG1B, main = 'wyniki REB1B')
+
+hist(p_cancer_1$TFF1, main = 'wyniki TFF1')
+```
+Inne od creatinine zmienne wyglądają jeszcze gorzej.
+
+Na tym etapie rozważałyśmy zmiane danych na inne, ale po przeszukaniu znacznej liczby zbiorów danych uznałyśmy, że również one nie gwarantują rozkładu normalnego zmiennej ilościowej.
+Postanowiłyśmy więc kontynuuować analizę na tych danych, ale zamiast anovy przeprowadzić nieparametryczny test Kruskala, który może zastąpić tradycyjną jednokierunkową analizę wariancji. 
+
+Będziemy badać zależność między grupami podzielonymi ze względu na zmienną `diagnosis`
+
+## Założenia - Kruskal - Wallis
+
+Aby móc przeprowadzić test Kruskala-Wallisa, muszą być spełnione dwa założenia. 
+Jedno dotyczy rodzaju zmiennych i uznajemy je za spełnione, ponieważ będziemy przeprowadzać test dla jednej zmiennej ilościowej i jednej kategoryzującej, jakościowej.
+
+Drugie dotyczy niezależności obserwacji i również uznajemy je za spełnione. Nie ma zależności między wynikami badań poszczególnych pacjentów.
+
+```{r}
+kruskal.test(creatinine ~ diagnosis, p_cancer_1)
+```
+Wynik testu jest dla nas zaskakujący. Spodziewałyśmy się, że 3 grupa będzie się znacząco różnić od innych, a test nie stwierdził różnic międy grupami. Sprawdzamy wynik na wykresie.
+
+
+
+```{r}
+
+ggplot(p_cancer_1, aes(x=diagnosis, y=creatinine)) + geom_point(aes(color=diagnosis), position='jitter') + labs(title = 'Wykres punktowy', x='Typ diagnozy', y='Poziom kreatyny') + theme(legend.position = 'none')
+```
+
+Faktycznie, nie widać istotnych różnic. Można stwierdzić nieco większe "wyciągnięcie" grup 2 i jeszcze większe 3.
+
+Sprawdzamy pozostałe wyniki badań.
+
+```{r}
+ggplot(p_cancer_1, aes(x=diagnosis, y=LYVE1)) + geom_point(aes(color=diagnosis), position='jitter') + labs(title = 'Wykres punktowy', x='Typ diagnozy', y='Poziom LYVE1') + theme(legend.position = 'none')
+
+ggplot(p_cancer_1, aes(x=diagnosis, y=REG1B)) + geom_point(aes(color=diagnosis), position='jitter') + labs(title = 'Wykres punktowy', x='Typ diagnozy', y='Poziom REG1B') + theme(legend.position = 'none')
+
+ggplot(p_cancer_1, aes(x=diagnosis, y=TFF1)) + geom_point(aes(color=diagnosis), position='jitter') + labs(title = 'Wykres punktowy', x='Typ diagnozy', y='Poziom TFF1') + theme(legend.position = 'none')
+```
+
+
+Pozostałe markery krwi zdają się dawać podobne wyniki creatine, ale spotęgowane. Tutaj trudno już zgodzić się z tym, że grupy są takie same.
+Najbardziej wyróżnia się grupa 3 w badaniu LYVE1. 
+Zbadamy tę grupę testem Kruskala - Wallisa
+
+```{r}
+kruskal.test(LYVE1 ~ diagnosis, p_cancer_1)
+```
+Tu wynik testu stwierdza już istotną różnicę.
+Kontynuujemy szukanie różnic w grupach względem zmiennej LYVE1, aby potwierdzić wynik testu.
+
+```{r}
+median(diagnosis_1$LYVE1)
+median(diagnosis_2$LYVE1)
+median(diagnosis_3$LYVE1)
+print('----------')
+mean(diagnosis_1$LYVE1)
+mean(diagnosis_2$LYVE1)
+mean(diagnosis_3$LYVE1)
+```
+Różnice w medianach i średnich są istotne.
+Ponownie pomagamy sobie wykresem.
+
+
+```{r}
+ggplot(p_cancer_1, aes(x = diagnosis, y = LYVE1)) + geom_boxplot()
+```
+Rozkłady bez wątpienia nie są takie same.
+Spróbujmy zrobić anovę, mimo niespełnionego warunku o rozkładzie i sprawdzić, co ona wykaże.
+
+
+```{r}
+summary(aov(LYVE1 ~ diagnosis, data = p_cancer_1))
+TukeyHSD(aov(LYVE1 ~ diagnosis, data = p_cancer_1))
+```
+
+Anova wykrywa różnice między grupami. Są to wszystkie grupy, ale między grupą 3 i pozostałymi różnice są bardzo duże.
+
+Test oczywiście nie jest wiarygodny ze względu na niespełnione założenia, wykonujemy go tylko poglądowo. 
+Spróbujmy jescze użyć nieparametrycznego testu wilcoxa opartego na medianach.
+
+```{r}
+pairwise.wilcox.test(p_cancer_1$LYVE1, p_cancer_1$diagnosis,
+                 p.adjust.method = "BH")
+```
+Test wilcoxa pokazuję, że wszystkie grupy są od siebie znacząco różne.
+
+Próbujemy jeszcze porównać rozkłady na histogramach.
+
+```{r}
+hist(diagnosis_1$LYVE1, main = "Diagnoza 1")
+hist(diagnosis_2$LYVE1, main = "Diagnoza 2")
+hist(diagnosis_3$LYVE1, main = "Diagnoza 3")
+```
+
+Pozostaje nam stwierdzić, że bez wątpienia dystrybuanty rozkładów w grupach różnią się znacząco. Różnią się również ze względu na średnie i mediany co oznacza, że faktycznie dałoby się z nich wywnioskować chorobę lub jej brak u pacjęta.
+
+
+Spróbujmy jeszcze ustalić czy istnieją różnice w wynikach ze względu na stan rozwoju nowotworu.
+
+
+```{r}
+stan1 <- subset(diagnosis_3, stage == "I" | stage == "IA" | stage == "IB" )
+head(stan1)
+hist(stan1$LYVE1)
+
+stan2 <- subset(diagnosis_3, stage == "II" | stage == "IIA" | stage == "IIB" )
+head(stan2)
+hist(stan1$LYVE1)
+
+stan3 <- subset(diagnosis_3, stage == "III" )
+head(stan3)
+hist(stan3$LYVE1)
+
+stan4 <- subset(diagnosis_3, stage == "IV" )
+head(stan4)
+hist(stan4$LYVE1)
+
+```
+
+Dodajemy kolumne uśredniającą stan rozwoju nowotworu w celu uproszczenia analizy.
+
+```{r}
+
+
+p_cancer_1 <- p_cancer_1 %>%
+  mutate(stage_add = case_when(
+    stage == 'I' ~ "1",
+    stage == 'IA' ~ "1",
+    stage == 'IB' ~ "1",
+    stage == 'II' ~ "2",
+    stage == 'IIA' ~ "2",
+    stage == 'IIB' ~ "2",
+    stage == 'III' ~ "3",
+    stage == 'IV' ~ "4",
+    
+    ))
+
+p_cancer_1 <- dplyr::mutate(p_cancer_1,stage_add = as.factor(stage_add))
+
+diagnosis_3 = subset(p_cancer_1, diagnosis == 3)
+
+View(p_cancer_1)
+```
+
+
+Ponownie rozkłady z pewnością nie są normalne więc używamy testu Kruskala-Wallisa.
+
+```{r}
+kruskal.test( LYVE1 ~ stage_add , diagnosis_3)
+```
+Test  wykrywa istotne różnice, co nie dziwi kiedy spojrzy się na histogramy. 
+
+
+
+```{r}
+
+dunn.test(diagnosis_3$LYVE1, diagnosis_3$stage_add)
+```
+
+
+Wychodzą nam istotne różnice między wszystkimi grupami poza 2 i 3.
+
+Oznacza to, że również stadium nowotworu można wywnioskować z wyników badań krwi.
+
+Sprawdźmy jeszcze czy te same wnioski uzyskamy dla poziomu kreatyny. Tłumaczyłoby to zasadność jej badania podczas gdy nie wykrywa samego nowotworu (grupy dzielone ze względu na diagnozę były nieistotnie różne).
+
+
+
+
+```{r}
+hist(stan1$creatinine)
+
+hist(stan1$creatinine)
+
+hist(stan3$creatinine)
+
+hist(stan4$creatinine)
+
+ggplot(diagnosis_3, aes(x=stage_add, y=creatinine)) + geom_point(aes(color=stage_add), position='jitter') + labs(title = 'Poziom kreatyny ze względu na stan rozwoju nowotwora', x='Typ diagnozy', y='Poziom kreatyny') + theme(legend.position = 'none')
+
+```
+
+
+Zdaje się, że różnice występują między grupami 1,2 a 3,4.
+
+Ponownie rozkłady z pewnością nie są normalne więc używamy testu Kruskala Wallisa.
+
+```{r}
+kruskal.test( creatinine ~ stage_add , diagnosis_3)
+```
+Test  wykrywa istotne różnice. Sprawdźmy, gdzie się one znajdują. 
+
+
+
+```{r}
+
+dunn.test(diagnosis_3$LYVE1, diagnosis_3$stage_add)
+```
+
+Różnice nie występują między grupami 2 - 3 oraz 3 - 4. Co zdaje się mieć potwierdzenia na wykresach.
+
+Prawdopodobnie więc kreatyna jest badana jako marker mający wskazać w jakim stadium jest nowotwór, a w mniejszym stopniu czy w ogóle występuje.
+
+#Regresja logistyczna
+Dodaje jeszcze jedną zmienną mówiącą czy pacjęt ma nowotwór czy nie.
+
+```{r}
+p_cancer_1 <- p_cancer_1%>% mutate(Status = if_else(diagnosis == "3", "1", "0"))
+p_cancer_1$Status<-factor(p_cancer_1$Status)
+head(p_cancer_1)
+```
+
+
+```{r}
+
+train_test_p <- createDataPartition(p_cancer_1$diagnosis, list = FALSE, p=0.75)
+p_train <- p_cancer_1[train_test_p,]
+p_test <-p_cancer_1[-train_test_p,]
+cat(dim(p_train),dim(p_test))
+```
+Biblioteka caret dba o stratyfikacje danych, ale dla pewności sprawdzimy czy większość danych nie trafiły do jednej klasy.
+
+
+```{r}
+table(p_cancer_1$Status)
+table(p_train$Status)
+table(p_test$Status)
+```
+Tabele wyglądają w porządku
+
+Tworze model i ćwicze go na zbiorze treningowym
+
+
+```{r}
+
+p_l_model <- glm(Status ~ LYVE1 + REG1B + TFF1, data = p_train, family = 'binomial')
+
+summary(p_l_model)
+```
+
+
+Wyliczam parametry potrzebne do oceny modelu. Robie to na podstawie zbioru testowego.
+
+
+```{r}
+p_preds <- predict(p_l_model,p_test, type = 'response')
+p_preds_classes <- ifelse(p_preds > 0.5, 1, 0) 
+table(p_preds_classes,p_test$Status)
+```
+Macierz pomyłek nie wygląda dobrze. Mamy FP: 10 i FN: 26. Dane są medyczne więc zwłaszcza wysokie FN martwi.
+
+
+```{r}
+p_cm <- caret::confusionMatrix(factor(p_preds_classes), factor(p_test$Status))
+p_confusion_matrix <- p_cm$table
+p_cm
+```
+
+Dokładność wygląda dobrze. Jednak dane  nie były zbilansowane więc liczymy klasyfikator naiwny.
+
+
+```{r}
+naiwny_macierz <- table(p_cancer_1$Status)
+round(naiwny_macierz[1]/sum(naiwny_macierz),2)
+```
+Klasyfikator naiwny wyszedł nienajgorzej.
+
+
+
+Zwizualizujmy macierz pomyłek dla naszego modelu.
+
+
+```{r}
+ggplot(as.data.frame(p_confusion_matrix), aes(x = Reference, y = Prediction)) + 
+  geom_tile(aes(fill = Freq), colour = 'white') + scale_fill_gradient(low = 'white', high = 'green') +
+  geom_text(aes(x = Reference, y = Prediction, label = Freq))
+```
+
+
+
+Stwórzmy krzywą ROC dla naszego modelu.
+
+
+```{r}
+p_roc <- pROC::roc(response = p_test$Status, predictor = p_preds)
+```
+```{r}
+pROC::plot.roc(p_roc, response = p_test$Status, predictor = p_preds, legacy.axes = TRUE)
+p_roc$auc
+```
